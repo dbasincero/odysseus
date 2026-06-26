@@ -2219,6 +2219,112 @@ async def action_cookbook_serve(
     return f"Launched {repo_id} (session {sid})", True
 
 
+async def action_life_os_ingest(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Collect Apple health/workouts (from the external SQL source), calendar
+    events (CalDAV-synced), and study/review docs into the local Life-OS history
+    DB. Each source is independent; missing config is reported, not fatal."""
+    try:
+        from src import life_os_sources
+        result = life_os_sources.ingest_all(owner=owner or None)
+
+        parts = []
+        any_data = any_error = False
+        for source, res in result.items():
+            status = res.get("status")
+            if status == "skipped":
+                parts.append(f"{source}: skipped")
+                continue
+            if status == "error":
+                any_error = True
+                parts.append(f"{source}: error ({res.get('reason')})")
+                continue
+            # Sum inserted/updated across the source's sub-results.
+            ins = upd = 0
+            for v in res.values():
+                if isinstance(v, dict):
+                    ins += int(v.get("inserted", 0) or 0)
+                    upd += int(v.get("updated", 0) or 0)
+            if ins or upd:
+                any_data = True
+            parts.append(f"{source}: +{ins} ~{upd}")
+
+        # Nothing ingested and nothing went wrong → stay silent in Activity.
+        if not any_data and not any_error:
+            raise TaskNoop("no Life-OS data to ingest this run")
+        return "Life-OS ingest — " + " · ".join(parts), True
+    except TaskNoop:
+        raise
+    except Exception as e:
+        logger.error(f"life_os_ingest action failed: {e}")
+        return str(e), False
+
+
+async def action_life_os_daily_goals(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Create today's goal-completion checklist note (with an evening reminder)
+    and seed the day's rows in the Life-OS history goal_log. Idempotent per day:
+    re-running won't duplicate the note or reset completion."""
+    try:
+        import json as _json
+        import uuid as _uuid
+        from core.database import SessionLocal, Note
+        from src import life_os, life_os_history
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        title = f"Metas de Hoje — {today}"
+        goals_time = (os.getenv("ODYSSEUS_LIFE_OS_GOALS_TIME", "20:00") or "20:00").strip()
+        due = f"{today}T{goals_time}"
+        owner_val = owner or None
+
+        db = SessionLocal()
+        try:
+            exists = db.query(Note).filter(
+                Note.owner == owner_val,
+                Note.source == "life_os_daily",
+                Note.title == title,
+            ).first()
+            if exists is None:
+                items = [
+                    {"text": f"[{g['area']}] {g['goal']}", "done": False}
+                    for g in life_os.DAILY_GOALS
+                ]
+                db.add(Note(
+                    id=str(_uuid.uuid4()),
+                    owner=owner_val,
+                    title=title,
+                    content="Conclua as metas do dia. Revise no check-in semanal (skill `weekly-life-review`).",
+                    items=_json.dumps(items),
+                    note_type="checklist",
+                    label="metas-diarias",
+                    source="life_os_daily",
+                    due_date=due,
+                    repeat="daily",
+                ))
+                db.commit()
+                created_note = True
+            else:
+                created_note = False
+        finally:
+            db.close()
+
+        # Seed history rows for the day (no-op for already-present goals).
+        try:
+            log = life_os_history.log_goals(today, life_os.DAILY_GOALS, owner=owner_val)
+        except Exception as e:
+            logger.warning("goal_log seed failed: %s", e)
+            log = {"created": 0}
+
+        if not created_note and log.get("created", 0) == 0:
+            raise TaskNoop("today's goals already set up")
+        note_msg = "note created" if created_note else "note exists"
+        return (f"Daily goals — {note_msg}, {log.get('created', 0)} goal row(s) "
+                f"logged for {today}"), True
+    except TaskNoop:
+        raise
+    except Exception as e:
+        logger.error(f"life_os_daily_goals action failed: {e}")
+        return str(e), False
+
+
 BUILTIN_ACTIONS = {
     "tidy_sessions": action_tidy_sessions,
     "tidy_documents": action_tidy_documents,
@@ -2239,6 +2345,8 @@ BUILTIN_ACTIONS = {
     "audit_skills": action_audit_skills,
     "check_email_urgency": action_check_email_urgency,
     "cookbook_serve": action_cookbook_serve,
+    "life_os_ingest": action_life_os_ingest,
+    "life_os_daily_goals": action_life_os_daily_goals,
     # ping_notes removed from the registry — runs only inside `_note_pings_loop`.
 }
 
@@ -2259,4 +2367,6 @@ BUILTIN_ACTION_INFO = {
     "test_skills": "Run the per-skill Test on every skill: agent run + LLM judge → records verdict on the skill (pass/needs_work/fail/inconclusive). Advisory only — never rewrites or demotes anything.",
     "audit_skills": "Audit unaudited skills after enough new skills are added: test, narrow metadata, self-edit/retry, optional teacher rewrite, tag duplicates/trivial skills, and publish/draft using the auto-approve threshold.",
     "check_email_urgency": "Scan unread emails hourly, tag urgent/reply-soon/newsletter/marketing/spam, and send a reminder when a new email needs a fast reply.",
+    "life_os_ingest": "Collect Apple health/workouts (from your local Postgres), CalDAV calendar events, and study/review docs into the local Life-OS history database.",
+    "life_os_daily_goals": "Create today's goal-completion checklist note with an evening reminder and log the day's goals to the Life-OS history for streak tracking.",
 }

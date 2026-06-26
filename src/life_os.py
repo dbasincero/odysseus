@@ -30,6 +30,19 @@ logger = logging.getLogger(__name__)
 NOTE_SOURCE = "life_os"
 SKILL_SOURCE = "taught"
 
+# Daily goal targets per life area, surfaced as a checklist reminder note each
+# day by the `life_os_daily_goals` scheduled action and logged to the history DB
+# (goal_log) so streaks/completion can be tracked over time.
+DAILY_GOALS: list[dict[str, str]] = [
+    {"area": "Fitness", "goal": "Bater a meta de proteína e treinar/cardio"},
+    {"area": "Fitness", "goal": "Registrar peso/medidas e refeições"},
+    {"area": "Inglês", "goal": "Drill diário de inglês (10–15 min) + vocabulário"},
+    {"area": "Investimentos", "goal": "Olhar o mercado sem trade impulsivo"},
+    {"area": "Empresa", "goal": "1 ação concreta no gargalo principal"},
+    {"area": "Família", "goal": "Tempo de qualidade com filhos / contato com os pais"},
+    {"area": "DBA/Tech", "goal": "Aprender ou documentar 1 coisa nova"},
+]
+
 
 # --------------------------------------------------------------------------- #
 # Skills — reusable procedures the agent can pull into context on demand.

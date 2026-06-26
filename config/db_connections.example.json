@@ -36,6 +36,20 @@
       "uri": "mongodb://localhost:27017",
       "database": "events",
       "allow_write": false
+    },
+    {
+      "id": "health_pg",
+      "name": "Apple Health (Postgres)",
+      "type": "sql",
+      "url": "postgresql+psycopg://user:password@localhost:5432/health",
+      "allow_write": false
+    },
+    {
+      "id": "life_os",
+      "name": "Life OS history",
+      "type": "sql",
+      "url": "sqlite:///./data/life_os.db",
+      "allow_write": false
     }
   ]
 }
