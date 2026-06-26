@@ -155,6 +155,35 @@ python scripts/life_os_ingest.py --owner you@example.com
 python scripts/life_os_ingest.py --summary
 ```
 
+### Quickstart on an Apple Silicon Mac (M4)
+
+For a Mac that stays on 24/7, run Odysseus natively (no Docker — native gets
+Metal GPU access for Cookbook):
+
+```bash
+# 1. First run: installs deps, sets up the venv, launches Odysseus.
+./start-macos.sh
+
+# 2. (Optional) Stand up the local health Postgres with the canonical schema.
+docker compose -f docker-compose.life-os.yml up -d
+#    Point your Apple Health collector app at it, then in .env:
+#    ODYSSEUS_LIFE_OS_HEALTH_URL=postgresql+psycopg://health:health@localhost:5432/health
+
+# 3. Life OS setup: installs the Postgres driver, registers connections, backfills.
+./scripts/setup-life-os-mac.sh you@example.com
+
+# 4. Seed personas/skills/notes.
+./venv/bin/python scripts/seed_life_os.py --owner you@example.com
+
+# 5. In Odysseus → Settings → Tasks, enable "Life OS Daily Goals" and
+#    "Life OS Ingest". Done — it now runs unattended.
+```
+
+The default health queries already match
+[`config/life_os_health_schema.sql`](../config/life_os_health_schema.sql), so if
+your collector writes into that schema you don't need to set the `*_QUERY` env
+vars at all — only `ODYSSEUS_LIFE_OS_HEALTH_URL`.
+
 This registers two **read-only** connections with the [Database MCP
 server](setup.md#database-mcp-server) — `life_os` (the history DB) and
 `health_pg` (if `ODYSSEUS_LIFE_OS_HEALTH_URL` is set) — so the **DBA Sênior**

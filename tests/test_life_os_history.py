@@ -109,6 +109,16 @@ def test_ingest_health_from_sql_source(history_db, monkeypatch, tmp_path):
     assert history_db.summary(owner="me")["health_metrics"] == 2
 
 
+def test_default_health_queries_expose_expected_aliases():
+    from src import life_os_sources as src
+    for q in (src.DEFAULT_HEALTH_METRICS_QUERY, src.DEFAULT_HEALTH_WORKOUTS_QUERY):
+        assert "external_id" in q
+    assert "metric_type" in src.DEFAULT_HEALTH_METRICS_QUERY
+    assert "ts" in src.DEFAULT_HEALTH_METRICS_QUERY
+    assert "start_ts" in src.DEFAULT_HEALTH_WORKOUTS_QUERY
+    assert "workout_type" in src.DEFAULT_HEALTH_WORKOUTS_QUERY
+
+
 def test_ingest_study_from_folder(history_db, monkeypatch, tmp_path):
     study = tmp_path / "study"
     (study / "sub").mkdir(parents=True)

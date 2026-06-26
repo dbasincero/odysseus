@@ -1,0 +1,36 @@
+# Optional local Postgres for the Life OS health data, separate from Odysseus.
+# Your Mac app collects Apple Health data into this DB; Odysseus reads it.
+#
+#   docker compose -f docker-compose.life-os.yml up -d
+#
+# The canonical schema (config/life_os_health_schema.sql) is loaded on first
+# start. postgres:16 has native arm64 images, so it runs on Apple Silicon (M4).
+#
+# Then point Odysseus at it (.env):
+#   ODYSSEUS_LIFE_OS_HEALTH_URL=postgresql+psycopg://health:health@localhost:5432/health
+#
+# Change the credentials below for anything beyond a single-user local box.
+
+services:
+  life-os-health-db:
+    image: docker.io/library/postgres:16
+    container_name: life-os-health-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: health
+      POSTGRES_PASSWORD: health
+      POSTGRES_DB: health
+    ports:
+      # Bind to loopback only — this DB should never be exposed off the Mac.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - life-os-health-data:/var/lib/postgresql/data
+      - ./config/life_os_health_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U health -d health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  life-os-health-data:

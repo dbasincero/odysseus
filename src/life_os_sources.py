@@ -40,6 +40,27 @@ _STUDY_SUFFIXES = (".md", ".markdown", ".txt")
 _STUDY_MAX_BYTES = 200_000
 _STUDY_DETAIL_CHARS = 1000
 
+# Default read-only queries used when the *_QUERY env vars aren't set. They
+# target the recommended canonical schema (config/life_os_health_schema.sql):
+# tables health_metrics(recorded_at, metric_type, value, unit, source) and
+# workouts(started_at, ended_at, workout_type, duration_s, energy_kcal,
+# distance_m, source). If your Mac collector uses different names, override the
+# two env vars — the column aliases below are all the ingester needs. Postgres
+# syntax (now()/interval); set the env queries for other engines.
+DEFAULT_HEALTH_METRICS_QUERY = (
+    "SELECT id AS external_id, recorded_at AS ts, metric_type, value, unit, source "
+    "FROM health_metrics "
+    "WHERE recorded_at > now() - interval '90 days' "
+    "ORDER BY recorded_at"
+)
+DEFAULT_HEALTH_WORKOUTS_QUERY = (
+    "SELECT id AS external_id, started_at AS start_ts, ended_at AS end_ts, "
+    "workout_type, duration_s, energy_kcal, distance_m, source "
+    "FROM workouts "
+    "WHERE started_at > now() - interval '180 days' "
+    "ORDER BY started_at"
+)
+
 
 def _coerce_dt(v: Any) -> Optional[datetime]:
     if v is None or isinstance(v, datetime):
@@ -89,37 +110,33 @@ def ingest_health(owner: Optional[str] = None) -> dict:
 
     out: dict[str, Any] = {"status": "ok"}
     try:
-        metrics_q = os.getenv("ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY", "").strip()
-        if metrics_q:
-            rows = _run_source_query(engine, metrics_q)
-            mapped = [{
-                "external_id": r.get("external_id"),
-                "ts": _coerce_dt(r.get("ts") or r.get("date") or r.get("timestamp")),
-                "metric_type": r.get("metric_type") or r.get("type"),
-                "value": r.get("value"),
-                "unit": r.get("unit"),
-                "source": r.get("source") or "apple_health",
-            } for r in rows]
-            out["metrics"] = hist.upsert_health_metrics(mapped, owner=owner)
-        else:
-            out["metrics"] = {"skipped": "ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY not set"}
+        metrics_q = (os.getenv("ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY", "").strip()
+                     or DEFAULT_HEALTH_METRICS_QUERY)
+        rows = _run_source_query(engine, metrics_q)
+        mapped = [{
+            "external_id": r.get("external_id"),
+            "ts": _coerce_dt(r.get("ts") or r.get("date") or r.get("timestamp")),
+            "metric_type": r.get("metric_type") or r.get("type"),
+            "value": r.get("value"),
+            "unit": r.get("unit"),
+            "source": r.get("source") or "apple_health",
+        } for r in rows]
+        out["metrics"] = hist.upsert_health_metrics(mapped, owner=owner)
 
-        workouts_q = os.getenv("ODYSSEUS_LIFE_OS_HEALTH_WORKOUTS_QUERY", "").strip()
-        if workouts_q:
-            rows = _run_source_query(engine, workouts_q)
-            mapped = [{
-                "external_id": r.get("external_id"),
-                "start_ts": _coerce_dt(r.get("start_ts") or r.get("start") or r.get("ts")),
-                "end_ts": _coerce_dt(r.get("end_ts") or r.get("end")),
-                "workout_type": r.get("workout_type") or r.get("type"),
-                "duration_s": r.get("duration_s"),
-                "energy_kcal": r.get("energy_kcal") or r.get("calories"),
-                "distance_m": r.get("distance_m"),
-                "source": r.get("source") or "apple_health",
-            } for r in rows]
-            out["workouts"] = hist.upsert_workouts(mapped, owner=owner)
-        else:
-            out["workouts"] = {"skipped": "ODYSSEUS_LIFE_OS_HEALTH_WORKOUTS_QUERY not set"}
+        workouts_q = (os.getenv("ODYSSEUS_LIFE_OS_HEALTH_WORKOUTS_QUERY", "").strip()
+                      or DEFAULT_HEALTH_WORKOUTS_QUERY)
+        rows = _run_source_query(engine, workouts_q)
+        mapped = [{
+            "external_id": r.get("external_id"),
+            "start_ts": _coerce_dt(r.get("start_ts") or r.get("start") or r.get("ts")),
+            "end_ts": _coerce_dt(r.get("end_ts") or r.get("end")),
+            "workout_type": r.get("workout_type") or r.get("type"),
+            "duration_s": r.get("duration_s"),
+            "energy_kcal": r.get("energy_kcal") or r.get("calories"),
+            "distance_m": r.get("distance_m"),
+            "source": r.get("source") or "apple_health",
+        } for r in rows]
+        out["workouts"] = hist.upsert_workouts(mapped, owner=owner)
     except Exception as e:
         logger.warning("Health ingest failed: %s", e)
         return {"status": "error", "reason": str(e)}
