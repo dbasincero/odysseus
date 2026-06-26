@@ -406,6 +406,44 @@ npx -y @playwright/mcp@latest --version
 
 That installs `@playwright/mcp` plus Playwright (~300MB total). Restart Odysseus and the server will register at startup.
 
+#### Database MCP server
+
+The built-in **database** server lets agents connect to databases you configure
+so they can inspect schema, run **read-only** diagnostics, troubleshoot issues,
+and document what they find as Notes. It supports PostgreSQL, MySQL/MariaDB,
+SQLite, and Oracle (via SQLAlchemy) plus MongoDB (via pymongo).
+
+1. Install the driver(s) you need from `requirements-optional.txt` — SQLite
+   needs none:
+   ```bash
+   pip install "psycopg[binary]"   # PostgreSQL
+   pip install PyMySQL             # MySQL/MariaDB
+   pip install oracledb            # Oracle
+   pip install pymongo             # MongoDB
+   ```
+2. Configure connections in `data/db_connections.json` (git-ignored — keep
+   credentials here) or the `ODYSSEUS_DB_CONNECTIONS` env var. See
+   [`config/db_connections.example.json`](../config/db_connections.example.json):
+   ```json
+   {
+     "connections": [
+       {"id": "appdb", "name": "App DB", "type": "sql",
+        "url": "postgresql+psycopg://user:pass@localhost:5432/app",
+        "allow_write": false},
+       {"id": "events", "name": "Mongo", "type": "mongodb",
+        "uri": "mongodb://localhost:27017", "database": "events",
+        "allow_write": false}
+     ]
+   }
+   ```
+
+**Safety:** every connection is **read-only** by default. The read path refuses
+any non-SELECT statement, so agents can diagnose freely without risk. To let an
+agent apply fixes, set `"allow_write": true` on that specific connection — only
+then will `db_execute` run writes/DDL. Tools exposed: `db_list_connections`,
+`db_list_tables`, `db_describe`, `db_query`, `db_execute`, `db_diagnose`,
+`db_document`.
+
 ## Architecture
 ```
 app.py                   # FastAPI entry point

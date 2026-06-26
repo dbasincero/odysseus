@@ -1,0 +1,41 @@
+{
+  "_comment": "Sample config for the built-in Database MCP server. Copy to data/db_connections.json (git-ignored) and edit. Each connection is READ-ONLY unless allow_write is true. Install the matching driver from requirements-optional.txt (SQLite needs none).",
+  "connections": [
+    {
+      "id": "appdb",
+      "name": "Application Postgres",
+      "type": "sql",
+      "url": "postgresql+psycopg://user:password@localhost:5432/app",
+      "allow_write": false
+    },
+    {
+      "id": "reporting",
+      "name": "Reporting MySQL",
+      "type": "sql",
+      "url": "mysql+pymysql://user:password@localhost:3306/reporting",
+      "allow_write": false
+    },
+    {
+      "id": "local_sqlite",
+      "name": "Local SQLite file",
+      "type": "sql",
+      "url": "sqlite:///./data/example.db",
+      "allow_write": false
+    },
+    {
+      "id": "warehouse",
+      "name": "Oracle warehouse",
+      "type": "sql",
+      "url": "oracle+oracledb://user:password@localhost:1521/?service_name=ORCLPDB1",
+      "allow_write": false
+    },
+    {
+      "id": "events",
+      "name": "MongoDB events",
+      "type": "mongodb",
+      "uri": "mongodb://localhost:27017",
+      "database": "events",
+      "allow_write": false
+    }
+  ]
+}

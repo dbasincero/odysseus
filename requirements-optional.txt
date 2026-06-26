@@ -12,6 +12,19 @@
 # GPU-accelerated transcription — it's auto-detected, CPU is used otherwise.
 faster-whisper
 
+# Database MCP server drivers (mcp_servers/database_server.py). The server is
+# built-in, but each engine needs its own driver — install only the ones you
+# actually connect to. SQLite works out of the box (stdlib) and SQLAlchemy is
+# already a core dep. URL/driver pairings:
+#   PostgreSQL    pip install "psycopg[binary]"   postgresql+psycopg://...
+#   MySQL/Maria   pip install PyMySQL             mysql+pymysql://...
+#   Oracle        pip install oracledb            oracle+oracledb://...
+#   MongoDB       pip install pymongo             mongodb://...
+psycopg[binary]
+PyMySQL
+oracledb
+pymongo
+
 # DuckDuckGo as a search provider option.
 # Install if you want DDG in the search-provider dropdown.
 # Alternatives: SearXNG, Brave, Tavily, Serper, Google PSE.
