@@ -119,6 +119,65 @@ def test_default_health_queries_expose_expected_aliases():
     assert "workout_type" in src.DEFAULT_HEALTH_WORKOUTS_QUERY
 
 
+def _build_metrics_query(src):
+    return src._build_query(
+        src._METRICS_SELECT, "recorded_at",
+        "ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY",
+        src.hist.HealthMetric, src.hist.HealthMetric.ts)
+
+
+def test_window_query_respects_env(history_db, monkeypatch):
+    from src import life_os_sources as src
+    monkeypatch.delenv("ODYSSEUS_LIFE_OS_HEALTH_MODE", raising=False)
+    monkeypatch.delenv("ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY", raising=False)
+    monkeypatch.setenv("ODYSSEUS_LIFE_OS_HEALTH_WINDOW_DAYS", "15")
+    q = _build_metrics_query(src)
+    assert "interval '15 days'" in q
+    assert "recorded_at" in q
+
+
+def test_window_default_is_30(history_db, monkeypatch):
+    from src import life_os_sources as src
+    for v in ("ODYSSEUS_LIFE_OS_HEALTH_MODE", "ODYSSEUS_LIFE_OS_HEALTH_WINDOW_DAYS",
+              "ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY"):
+        monkeypatch.delenv(v, raising=False)
+    assert "interval '30 days'" in _build_metrics_query(src)
+
+
+def test_watermark_mode_uses_history_max(history_db, monkeypatch):
+    from datetime import datetime, timezone
+    from src import life_os_sources as src
+    monkeypatch.delenv("ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY", raising=False)
+    monkeypatch.setenv("ODYSSEUS_LIFE_OS_HEALTH_MODE", "watermark")
+    monkeypatch.setenv("ODYSSEUS_LIFE_OS_HEALTH_WATERMARK_LAG_DAYS", "0")
+    history_db.upsert_health_metrics(
+        [{"external_id": "x", "metric_type": "weight", "value": 80.0,
+          "ts": datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc)}], owner="me")
+    q = _build_metrics_query(src)
+    # No window filter; filters on the stored max ts (lag 0).
+    assert "now() - interval" not in q
+    assert "recorded_at > '2026-06-20" in q
+
+
+def test_watermark_first_run_is_bounded(history_db, monkeypatch):
+    from src import life_os_sources as src
+    monkeypatch.delenv("ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY", raising=False)
+    monkeypatch.setenv("ODYSSEUS_LIFE_OS_HEALTH_MODE", "watermark")
+    monkeypatch.setenv("ODYSSEUS_LIFE_OS_HEALTH_WINDOW_DAYS", "10")
+    q = _build_metrics_query(src)  # empty history → now - window, not unbounded
+    assert "recorded_at > '" in q and "now() - interval" not in q
+
+
+def test_custom_query_watermark_placeholder(history_db, monkeypatch):
+    from src import life_os_sources as src
+    monkeypatch.setenv("ODYSSEUS_LIFE_OS_HEALTH_MODE", "watermark")
+    monkeypatch.setenv("ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY",
+                       "SELECT * FROM hm WHERE ts > '{watermark}'")
+    q = _build_metrics_query(src)
+    assert "{watermark}" not in q
+    assert "ts > '" in q
+
+
 def test_ingest_study_from_folder(history_db, monkeypatch, tmp_path):
     study = tmp_path / "study"
     (study / "sub").mkdir(parents=True)

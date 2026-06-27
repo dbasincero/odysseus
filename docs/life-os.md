@@ -184,6 +184,35 @@ The default health queries already match
 your collector writes into that schema you don't need to set the `*_QUERY` env
 vars at all — only `ODYSSEUS_LIFE_OS_HEALTH_URL`.
 
+### Update strategy — how history stays correct over time
+
+The history is **append + idempotent upsert, never full-replace**: every row is
+keyed by a stable id (your source `external_id`, or a hash of
+`timestamp+type+source`), so re-reading overlapping data updates in place
+instead of duplicating, and old history is never re-touched.
+
+Two ingest modes (set `ODYSSEUS_LIFE_OS_HEALTH_MODE`):
+
+| Mode | What it does | Best for |
+|------|--------------|----------|
+| `window` (default) | Re-reads the last **N days** each run and upserts. Self-heals Apple samples that arrive or get edited late. | Day-aggregated data (recommended). |
+| `watermark` | Fetches only rows newer than *(last ingested timestamp − lag)*. | Raw high-frequency data you don't want to re-scan. |
+
+Tuning (env):
+
+- `ODYSSEUS_LIFE_OS_HEALTH_WINDOW_DAYS` — window size (default **30**).
+- `ODYSSEUS_LIFE_OS_HEALTH_WATERMARK_LAG_DAYS` — safety overlap so watermark
+  mode still catches recent edits (default **2**).
+- Custom `*_QUERY` with a `{watermark}` placeholder runs incrementally too —
+  Odysseus substitutes the timestamp before executing.
+
+**Recommended setup:** keep raw samples in your Postgres (source of truth) but
+have your collector — or a `VIEW` — aggregate to **per day / per workout**, so
+years of history stay small. The schema ships two ready rollups,
+`health_metrics_daily` and `workouts_daily`, which the agents can query directly
+for trends. Default `window` mode at 30 days is cheap on aggregated data and
+auto-healing; switch to `watermark` only if you ingest raw high-frequency rows.
+
 This registers two **read-only** connections with the [Database MCP
 server](setup.md#database-mcp-server) — `life_os` (the history DB) and
 `health_pg` (if `ODYSSEUS_LIFE_OS_HEALTH_URL` is set) — so the **DBA Sênior**

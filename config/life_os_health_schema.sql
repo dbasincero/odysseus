@@ -38,3 +38,33 @@ CREATE TABLE IF NOT EXISTS workouts (
 
 CREATE INDEX IF NOT EXISTS idx_workouts_started_at
     ON workouts (started_at);
+
+-- Daily rollups. Your collector keeps writing raw samples; these views deliver
+-- the per-day aggregates the agents/dashboards actually trend on. Both avg and
+-- sum are exposed so you pick the right one per metric (avg for body_mass /
+-- heart_rate, sum for step_count / active_energy).
+CREATE OR REPLACE VIEW health_metrics_daily AS
+SELECT
+    date_trunc('day', recorded_at) AS day,
+    metric_type,
+    source,
+    count(*)   AS samples,
+    avg(value) AS avg_value,
+    min(value) AS min_value,
+    max(value) AS max_value,
+    sum(value) AS sum_value,
+    max(unit)  AS unit
+FROM health_metrics
+GROUP BY 1, 2, 3;
+
+CREATE OR REPLACE VIEW workouts_daily AS
+SELECT
+    date_trunc('day', started_at) AS day,
+    workout_type,
+    source,
+    count(*)          AS sessions,
+    sum(duration_s)   AS total_duration_s,
+    sum(energy_kcal)  AS total_energy_kcal,
+    sum(distance_m)   AS total_distance_m
+FROM workouts
+GROUP BY 1, 2, 3;

@@ -40,24 +40,90 @@ _STUDY_SUFFIXES = (".md", ".markdown", ".txt")
 _STUDY_MAX_BYTES = 200_000
 _STUDY_DETAIL_CHARS = 1000
 
-# Default read-only queries used when the *_QUERY env vars aren't set. They
-# target the recommended canonical schema (config/life_os_health_schema.sql):
-# tables health_metrics(recorded_at, metric_type, value, unit, source) and
-# workouts(started_at, ended_at, workout_type, duration_s, energy_kcal,
-# distance_m, source). If your Mac collector uses different names, override the
-# two env vars — the column aliases below are all the ingester needs. Postgres
-# syntax (now()/interval); set the env queries for other engines.
-DEFAULT_HEALTH_METRICS_QUERY = (
+# Read-only SELECT prefixes against the recommended canonical schema
+# (config/life_os_health_schema.sql): tables health_metrics(recorded_at,
+# metric_type, value, unit, source) and workouts(started_at, ended_at,
+# workout_type, duration_s, energy_kcal, distance_m, source). If your Mac
+# collector uses different names, override ODYSSEUS_LIFE_OS_HEALTH_*_QUERY — the
+# column aliases below are all the ingester needs.
+_METRICS_SELECT = (
     "SELECT id AS external_id, recorded_at AS ts, metric_type, value, unit, source "
-    "FROM health_metrics "
-    "WHERE recorded_at > now() - interval '90 days' "
+    "FROM health_metrics"
+)
+_WORKOUTS_SELECT = (
+    "SELECT id AS external_id, started_at AS start_ts, ended_at AS end_ts, "
+    "workout_type, duration_s, energy_kcal, distance_m, source "
+    "FROM workouts"
+)
+
+# Ingest strategy (see docs/life-os.md "update strategy"):
+#   window    (default) — re-read the last N days every run and upsert. Self-
+#              heals late-arriving/edited Apple samples; cheap on aggregated data.
+#   watermark — fetch only rows newer than (last ingested ts − lag). Incremental
+#              for raw high-frequency data; the lag still catches recent edits.
+_DEFAULT_WINDOW_DAYS = 30
+_DEFAULT_WATERMARK_LAG_DAYS = 2
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, "").strip() or default))
+    except ValueError:
+        return default
+
+
+def _window_days() -> int:
+    return _env_int("ODYSSEUS_LIFE_OS_HEALTH_WINDOW_DAYS", _DEFAULT_WINDOW_DAYS) or _DEFAULT_WINDOW_DAYS
+
+
+def _mode() -> str:
+    return ("watermark" if os.getenv("ODYSSEUS_LIFE_OS_HEALTH_MODE", "").strip().lower()
+            == "watermark" else "window")
+
+
+def _watermark(model, attr) -> datetime:
+    """Effective watermark for incremental fetch: (max ts already in history −
+    lag), or (now − window) on first run so the initial backfill stays bounded."""
+    lag = _env_int("ODYSSEUS_LIFE_OS_HEALTH_WATERMARK_LAG_DAYS", _DEFAULT_WATERMARK_LAG_DAYS)
+    session = hist.get_session()
+    try:
+        latest = session.query(attr).order_by(attr.desc()).limit(1).scalar()
+    finally:
+        session.close()
+    if latest is None:
+        return datetime.now(timezone.utc) - timedelta(days=_window_days())
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=timezone.utc)
+    return latest - timedelta(days=lag)
+
+
+def _build_query(select_prefix: str, time_col: str, env_name: str, model, attr) -> str:
+    """Build the effective read query honoring custom override, mode, and window.
+
+    A custom query is used as-is, unless it contains the literal ``{watermark}``
+    placeholder — then the watermark timestamp is substituted, so even custom
+    schemas can run incrementally.
+    """
+    custom = os.getenv(env_name, "").strip()
+    if custom:
+        if "{watermark}" in custom:
+            return custom.replace("{watermark}", _watermark(model, attr).isoformat())
+        return custom
+    if _mode() == "watermark":
+        wm = _watermark(model, attr).isoformat()
+        return f"{select_prefix} WHERE {time_col} > '{wm}' ORDER BY {time_col}"
+    return (f"{select_prefix} WHERE {time_col} > now() - interval '{_window_days()} days' "
+            f"ORDER BY {time_col}")
+
+
+# Representative defaults (window mode, default window) — kept for reference and
+# back-compat. The live ingest uses _build_query() so env config is honored.
+DEFAULT_HEALTH_METRICS_QUERY = (
+    f"{_METRICS_SELECT} WHERE recorded_at > now() - interval '{_DEFAULT_WINDOW_DAYS} days' "
     "ORDER BY recorded_at"
 )
 DEFAULT_HEALTH_WORKOUTS_QUERY = (
-    "SELECT id AS external_id, started_at AS start_ts, ended_at AS end_ts, "
-    "workout_type, duration_s, energy_kcal, distance_m, source "
-    "FROM workouts "
-    "WHERE started_at > now() - interval '180 days' "
+    f"{_WORKOUTS_SELECT} WHERE started_at > now() - interval '{_DEFAULT_WINDOW_DAYS} days' "
     "ORDER BY started_at"
 )
 
@@ -108,10 +174,11 @@ def ingest_health(owner: Optional[str] = None) -> dict:
     if err:
         return {"status": "skipped", "reason": err}
 
-    out: dict[str, Any] = {"status": "ok"}
+    out: dict[str, Any] = {"status": "ok", "mode": _mode()}
     try:
-        metrics_q = (os.getenv("ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY", "").strip()
-                     or DEFAULT_HEALTH_METRICS_QUERY)
+        metrics_q = _build_query(
+            _METRICS_SELECT, "recorded_at", "ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY",
+            hist.HealthMetric, hist.HealthMetric.ts)
         rows = _run_source_query(engine, metrics_q)
         mapped = [{
             "external_id": r.get("external_id"),
@@ -123,8 +190,9 @@ def ingest_health(owner: Optional[str] = None) -> dict:
         } for r in rows]
         out["metrics"] = hist.upsert_health_metrics(mapped, owner=owner)
 
-        workouts_q = (os.getenv("ODYSSEUS_LIFE_OS_HEALTH_WORKOUTS_QUERY", "").strip()
-                      or DEFAULT_HEALTH_WORKOUTS_QUERY)
+        workouts_q = _build_query(
+            _WORKOUTS_SELECT, "started_at", "ODYSSEUS_LIFE_OS_HEALTH_WORKOUTS_QUERY",
+            hist.Workout, hist.Workout.start_ts)
         rows = _run_source_query(engine, workouts_q)
         mapped = [{
             "external_id": r.get("external_id"),
