@@ -760,6 +760,78 @@ def _diagnose_sql(conn: dict) -> str:
     return "\n".join(out)
 
 
+# Threshold checks for unattended monitoring (DBA Night Watch). Each entry:
+# (check name, read-only SQL returning a single numeric `n`, message template).
+# An alert fires when n > 0.
+_HEALTH_CHECKS: dict[str, list[tuple]] = {
+    "postgresql": [
+        ("blocked_locks",
+         "SELECT count(*) AS n FROM pg_locks WHERE NOT granted",
+         "{n} lock(s) waiting (blocking)"),
+        ("long_queries",
+         "SELECT count(*) AS n FROM pg_stat_activity WHERE state <> 'idle' "
+         "AND now() - query_start > interval '5 minutes'",
+         "{n} query(ies) running >5min"),
+        ("idle_in_transaction",
+         "SELECT count(*) AS n FROM pg_stat_activity "
+         "WHERE state = 'idle in transaction' AND now() - state_change > interval '5 minutes'",
+         "{n} session(s) idle-in-transaction >5min"),
+    ],
+    "mysql": [
+        ("long_queries",
+         "SELECT count(*) AS n FROM information_schema.processlist "
+         "WHERE command <> 'Sleep' AND time > 300",
+         "{n} query(ies) running >5min"),
+    ],
+}
+
+
+def health_alerts(conn_id: str) -> list[dict]:
+    """Run read-only threshold checks and return only the firing alerts.
+
+    Used by the unattended DBA watch — returns ``[]`` when healthy. SQLite gets
+    an integrity check; engines without curated checks return ``[]``.
+    """
+    conn = get_connection(conn_id)
+    if not conn or conn["type"] == "mongodb":
+        return []
+    from sqlalchemy import text
+    alerts: list[dict] = []
+    try:
+        engine = _sql_engine(conn)
+        dialect = engine.dialect.name
+        with engine.connect() as raw:
+            _apply_read_only(raw, dialect)
+            if dialect == "sqlite":
+                try:
+                    res = raw.execute(text("PRAGMA integrity_check")).scalar()
+                    if res and str(res).lower() != "ok":
+                        alerts.append({"connection": conn_id, "check": "integrity",
+                                       "detail": f"integrity_check: {res}"})
+                except Exception:
+                    pass
+                return alerts
+            for name, sql, msg in _HEALTH_CHECKS.get(dialect, []):
+                try:
+                    n = raw.execute(text(sql)).scalar() or 0
+                    if n and int(n) > 0:
+                        alerts.append({"connection": conn_id, "check": name,
+                                       "detail": msg.format(n=int(n))})
+                except Exception:
+                    # A failing check (permissions, missing view) isn't an alert
+                    # by itself; skip it rather than crying wolf.
+                    pass
+                finally:
+                    try:
+                        raw.rollback()
+                    except Exception:
+                        pass
+    except Exception as e:
+        alerts.append({"connection": conn_id, "check": "connection",
+                       "detail": f"could not reach DB: {_safe_err(e, conn)}"})
+    return alerts
+
+
 def _diagnose_mongo(conn: dict) -> str:
     db = _mongo_db(conn)
     out = [f"**Diagnostics for `{conn['id']}` (mongodb)**"]

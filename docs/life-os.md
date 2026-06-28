@@ -145,6 +145,28 @@ derived when absent):
 - **metrics:** `external_id?`, `ts`, `metric_type`, `value`, `unit?`, `source?`
 - **workouts:** `external_id?`, `start_ts`, `end_ts?`, `workout_type`, `duration_s?`, `energy_kcal?`, `distance_m?`, `source?`
 
+### Proactive digests (push to your phone)
+
+Four more scheduled tasks turn the history into proactive nudges. They ship
+**paused** — enable under **Settings → Tasks**. Each builds a Note with a
+due-now reminder, so it's delivered through your configured reminder channel
+(ntfy push / browser / email).
+
+| Task | When | What it pushes |
+|------|------|----------------|
+| **Life OS Morning Brief** | daily 06:30 | Today's calendar, weight trend, English review count, and the #1 goal per area. |
+| **Life OS Fitness Digest** | weekly (Sun 08:00) | Weight/body-fat trend, training adherence, a **calorie adjustment**, and a **plateau alert**. |
+| **Life OS DBA Night Watch** | every 2h | Scans your DB connections; alerts **only** on blocked locks, long queries, or integrity issues, and appends to the runbook (`data/personal_docs/runbook/dba-watch.md`). |
+| **Life OS English Lesson** | daily 07:15 | Spaced-repetition (SM-2) vocabulary review + a prompt to run with the English tutor. |
+
+For push delivery, configure an **ntfy** reminder channel in Settings (the
+`ntfy` service is in `docker-compose.yml`); without it, briefs still appear
+in-app and by email if configured.
+
+The English SRS keeps vocabulary in the history DB (`vocab` table). The tutor —
+or you — adds words via `life_os_history.add_vocab(...)` and grades reviews with
+`grade_vocab(id, quality 0-5)`; due cards surface in the daily lesson.
+
 ### One-time setup / backfill
 
 ```bash

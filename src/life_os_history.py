@@ -146,6 +146,23 @@ class GoalLog(Base):
     )
 
 
+class VocabItem(Base):
+    """English vocabulary with SM-2-style spaced-repetition scheduling."""
+    __tablename__ = "vocab"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(255), nullable=True)
+    term = Column(String(255), nullable=False)
+    translation = Column(Text, nullable=True)
+    example = Column(Text, nullable=True)
+    ease = Column(Float, default=2.5)
+    interval_days = Column(Integer, default=0)
+    reps = Column(Integer, default=0)
+    next_review = Column(String(10), nullable=True)  # YYYY-MM-DD
+    added_at = Column(DateTime, default=_now)
+    last_reviewed = Column(String(10), nullable=True)
+    __table_args__ = (UniqueConstraint("owner", "term", name="uq_vocab_owner_term"),)
+
+
 # --------------------------------------------------------------------------- #
 # Engine / session
 # --------------------------------------------------------------------------- #
@@ -330,6 +347,109 @@ def mark_goal(date: str, area: str, goal: str, done: bool = True,
             row.note = note
         session.commit()
         return True
+    finally:
+        session.close()
+
+
+# --------------------------------------------------------------------------- #
+# Vocabulary SRS (spaced repetition, SM-2 flavored)
+# --------------------------------------------------------------------------- #
+def _today_str() -> str:
+    return _now().strftime("%Y-%m-%d")
+
+
+def _add_days(date_str: str, days: int) -> str:
+    from datetime import datetime as _dt, timedelta as _td
+    return (_dt.strptime(date_str, "%Y-%m-%d") + _td(days=days)).strftime("%Y-%m-%d")
+
+
+def add_vocab(term: str, translation: str = "", example: str = "",
+              owner: Optional[str] = None, today: Optional[str] = None) -> dict:
+    """Add a word (idempotent per owner+term). New words are due immediately."""
+    term = (term or "").strip()
+    if not term:
+        return {"added": False, "reason": "empty term"}
+    today = today or _today_str()
+    session = get_session()
+    try:
+        row = session.query(VocabItem).filter(
+            VocabItem.owner == owner, VocabItem.term == term).one_or_none()
+        if row is None:
+            session.add(VocabItem(owner=owner, term=term, translation=translation,
+                                  example=example, next_review=today))
+            created = True
+        else:
+            # Enrich without resetting schedule.
+            if translation:
+                row.translation = translation
+            if example:
+                row.example = example
+            created = False
+        session.commit()
+        return {"added": created, "term": term}
+    finally:
+        session.close()
+
+
+def due_vocab(owner: Optional[str] = None, today: Optional[str] = None,
+              limit: int = 20) -> list[dict]:
+    """Words whose next_review is today or earlier (or never reviewed)."""
+    today = today or _today_str()
+    session = get_session()
+    try:
+        q = session.query(VocabItem)
+        if owner is not None:
+            q = q.filter(VocabItem.owner == owner)
+        q = q.filter((VocabItem.next_review == None) | (VocabItem.next_review <= today))  # noqa: E711
+        rows = q.order_by(VocabItem.next_review).limit(limit).all()
+        return [{"id": r.id, "term": r.term, "translation": r.translation,
+                 "example": r.example, "reps": r.reps} for r in rows]
+    finally:
+        session.close()
+
+
+def grade_vocab(vocab_id: int, quality: int, owner: Optional[str] = None,
+                today: Optional[str] = None) -> dict:
+    """Apply an SM-2 review. quality 0-5; <3 lapses the card to interval 1."""
+    today = today or _today_str()
+    quality = max(0, min(5, int(quality)))
+    session = get_session()
+    try:
+        row = session.query(VocabItem).filter(VocabItem.id == vocab_id).one_or_none()
+        if row is None or (owner is not None and row.owner != owner):
+            return {"ok": False, "reason": "not found"}
+        if quality < 3:
+            row.reps = 0
+            row.interval_days = 1
+        else:
+            row.reps = (row.reps or 0) + 1
+            if row.reps == 1:
+                row.interval_days = 1
+            elif row.reps == 2:
+                row.interval_days = 6
+            else:
+                row.interval_days = max(1, round((row.interval_days or 1) * (row.ease or 2.5)))
+        row.ease = max(1.3, (row.ease or 2.5) + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02)))
+        row.last_reviewed = today
+        row.next_review = _add_days(today, row.interval_days)
+        session.commit()
+        return {"ok": True, "term": row.term, "interval_days": row.interval_days,
+                "next_review": row.next_review}
+    finally:
+        session.close()
+
+
+def vocab_stats(owner: Optional[str] = None, today: Optional[str] = None) -> dict:
+    today = today or _today_str()
+    session = get_session()
+    try:
+        q = session.query(VocabItem)
+        if owner is not None:
+            q = q.filter(VocabItem.owner == owner)
+        total = q.count()
+        due = q.filter((VocabItem.next_review == None) | (VocabItem.next_review <= today)).count()  # noqa: E711
+        learned = q.filter(VocabItem.reps >= 3).count()
+        return {"total": total, "due": due, "learned": learned}
     finally:
         session.close()
 

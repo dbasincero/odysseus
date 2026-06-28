@@ -2325,6 +2325,116 @@ async def action_life_os_daily_goals(owner: str, **kwargs) -> Tuple[str, bool]:
         return str(e), False
 
 
+def _life_os_push_note(owner, title, content, label, source) -> bool:
+    """Create a Note with due_date=now so the reminder pipeline pushes it
+    (ntfy/browser/email). Idempotent per (owner, source, title): re-runs that
+    day neither duplicate nor re-push. Returns True if a new note was created."""
+    import json as _json
+    import uuid as _uuid
+    from core.database import SessionLocal, Note
+
+    db = SessionLocal()
+    try:
+        exists = db.query(Note).filter(
+            Note.owner == owner, Note.source == source, Note.title == title,
+        ).first()
+        if exists is not None:
+            return False
+        db.add(Note(
+            id=str(_uuid.uuid4()),
+            owner=owner,
+            title=title,
+            content=content,
+            note_type="note",
+            label=label,
+            source=source,
+            due_date=datetime.now().strftime("%Y-%m-%dT%H:%M"),
+        ))
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
+async def action_life_os_morning_brief(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Build today's integrated morning brief (calendar, fitness, English, goals)
+    and push it as a Note reminder."""
+    try:
+        from src import life_os_digests
+        b = life_os_digests.morning_brief(owner=owner or None)
+        created = _life_os_push_note(owner or None, b["title"], b["markdown"],
+                                     "brief", "life_os_brief")
+        if not created:
+            raise TaskNoop("today's brief already pushed")
+        return f"Morning brief pushed: {b['title']}", True
+    except TaskNoop:
+        raise
+    except Exception as e:
+        logger.error(f"life_os_morning_brief action failed: {e}")
+        return str(e), False
+
+
+async def action_life_os_fitness_digest(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Weekly fat-loss digest: weight trend, calorie suggestion, plateau flag."""
+    try:
+        from src import life_os_digests
+        d = life_os_digests.fitness_digest(owner=owner or None)
+        created = _life_os_push_note(owner or None, d["title"], d["markdown"],
+                                     "fitness", "life_os_fitness")
+        if not created:
+            raise TaskNoop("this week's fitness digest already pushed")
+        flag = " (atenção!)" if d.get("alert") else ""
+        return f"Fitness digest pushed{flag}: {d['title']}", True
+    except TaskNoop:
+        raise
+    except Exception as e:
+        logger.error(f"life_os_fitness_digest action failed: {e}")
+        return str(e), False
+
+
+async def action_life_os_dba_watch(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Unattended DB health scan; only alerts (and appends to the runbook) when
+    something is actually wrong."""
+    try:
+        from src import life_os_digests
+        scan = life_os_digests.dba_health_scan(owner=owner or None)
+        if not scan["alerts"]:
+            raise TaskNoop(f"DBs healthy ({scan['scanned']} scanned)")
+        # Append to the runbook file so the on-disk history grows.
+        try:
+            os.makedirs(RUNBOOK_DIR, exist_ok=True)
+            with open(os.path.join(RUNBOOK_DIR, "dba-watch.md"), "a", encoding="utf-8") as fh:
+                fh.write("\n\n" + scan["markdown"] + "\n")
+        except Exception as e:
+            logger.warning("runbook append failed: %s", e)
+        # Push a fresh alert note (title carries a timestamp so each scan pushes).
+        title = scan["title"] + datetime.now().strftime(" %H:%M")
+        _life_os_push_note(owner or None, title, scan["markdown"], "dba-watch", "life_os_dba")
+        return f"DBA watch: {len(scan['alerts'])} alert(s) across {scan['scanned']} DB(s)", True
+    except TaskNoop:
+        raise
+    except Exception as e:
+        logger.error(f"life_os_dba_watch action failed: {e}")
+        return str(e), False
+
+
+async def action_life_os_english_lesson(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Daily English: spaced-repetition review + a lesson prompt, pushed as a note."""
+    try:
+        from src import life_os_digests
+        les = life_os_digests.english_lesson(owner=owner or None)
+        created = _life_os_push_note(owner or None, les["title"], les["markdown"],
+                                     "english", "life_os_english")
+        if not created:
+            raise TaskNoop("today's English lesson already pushed")
+        return f"English lesson pushed ({les.get('due_count', 0)} due): {les['title']}", True
+    except TaskNoop:
+        raise
+    except Exception as e:
+        logger.error(f"life_os_english_lesson action failed: {e}")
+        return str(e), False
+
+
 BUILTIN_ACTIONS = {
     "tidy_sessions": action_tidy_sessions,
     "tidy_documents": action_tidy_documents,
@@ -2347,6 +2457,10 @@ BUILTIN_ACTIONS = {
     "cookbook_serve": action_cookbook_serve,
     "life_os_ingest": action_life_os_ingest,
     "life_os_daily_goals": action_life_os_daily_goals,
+    "life_os_morning_brief": action_life_os_morning_brief,
+    "life_os_fitness_digest": action_life_os_fitness_digest,
+    "life_os_dba_watch": action_life_os_dba_watch,
+    "life_os_english_lesson": action_life_os_english_lesson,
     # ping_notes removed from the registry — runs only inside `_note_pings_loop`.
 }
 
@@ -2369,4 +2483,8 @@ BUILTIN_ACTION_INFO = {
     "check_email_urgency": "Scan unread emails hourly, tag urgent/reply-soon/newsletter/marketing/spam, and send a reminder when a new email needs a fast reply.",
     "life_os_ingest": "Collect Apple health/workouts (from your local Postgres), CalDAV calendar events, and study/review docs into the local Life-OS history database.",
     "life_os_daily_goals": "Create today's goal-completion checklist note with an evening reminder and log the day's goals to the Life-OS history for streak tracking.",
+    "life_os_morning_brief": "Push a daily morning brief: today's calendar, weight trend, English review count, and the #1 goal per area.",
+    "life_os_fitness_digest": "Push a weekly fat-loss digest: weight/body-fat trend, training adherence, a calorie adjustment, and a plateau alert.",
+    "life_os_dba_watch": "Scan your configured databases on a schedule and alert (and append to the runbook) only when there are blocked locks, long queries, or integrity issues.",
+    "life_os_english_lesson": "Push a daily English lesson: spaced-repetition vocabulary review plus a prompt to run with the English tutor.",
 }

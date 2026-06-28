@@ -245,6 +245,10 @@ HOUSEKEEPING_DEFAULTS = {
     "audit_skills":          {"name": "Skills Audit",             "trigger_type": "event", "trigger_event": "skill_added", "trigger_count": 5, "schedule": None, "scheduled_time": None, "cron_expression": None, "legacy_names": ["Audit Skills"]},
     "life_os_ingest":        {"name": "Life OS Ingest",           "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 * * * *", "ship_paused": True, "legacy_names": ["Life OS Data Ingest"]},
     "life_os_daily_goals":   {"name": "Life OS Daily Goals",      "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 7 * * *", "ship_paused": True, "legacy_names": ["Daily Goals"]},
+    "life_os_morning_brief": {"name": "Life OS Morning Brief",    "schedule": "cron",  "scheduled_time": None,    "cron_expression": "30 6 * * *", "ship_paused": True, "legacy_names": ["Morning Brief"]},
+    "life_os_fitness_digest":{"name": "Life OS Fitness Digest",   "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 8 * * 0", "ship_paused": True, "legacy_names": ["Fitness Digest"]},
+    "life_os_dba_watch":     {"name": "Life OS DBA Night Watch",  "schedule": "cron",  "scheduled_time": None,    "cron_expression": "0 */2 * * *", "ship_paused": True, "legacy_names": ["DBA Night Watch"]},
+    "life_os_english_lesson":{"name": "Life OS English Lesson",   "schedule": "cron",  "scheduled_time": None,    "cron_expression": "15 7 * * *", "ship_paused": True, "legacy_names": ["English Lesson"]},
 }
 
 RETIRED_HOUSEKEEPING_ACTIONS = frozenset({
