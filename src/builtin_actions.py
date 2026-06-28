@@ -1430,6 +1430,17 @@ async def action_ping_notes(owner: str, **kwargs) -> Tuple[str, bool]:
                     )
                     cache[n.id] = now.isoformat()
                     sent.append(title)
+                    # Critical items also sound the Mac alarm (afplay/say). Keyed
+                    # off the note's label/importance so the user categorizes
+                    # what's critical. No-op off macOS / when disabled.
+                    try:
+                        from src import mac_alarm
+                        if mac_alarm.is_critical(
+                            getattr(n, "label", None), getattr(n, "importance", None)
+                        ):
+                            mac_alarm.play_alarm(title)
+                    except Exception as _alarm_err:
+                        logger.debug("mac alarm skipped: %s", _alarm_err)
                 except Exception as e:
                     logger.warning(f"ping_notes: dispatch failed for {n.id}: {e}")
 

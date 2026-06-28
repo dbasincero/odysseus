@@ -167,6 +167,30 @@ The English SRS keeps vocabulary in the history DB (`vocab` table). The tutor �
 or you — adds words via `life_os_history.add_vocab(...)` and grades reviews with
 `grade_vocab(id, quality 0-5)`; due cards surface in the daily lesson.
 
+### Critical alarm on the Mac
+
+For things that must not be missed, Odysseus can **play an alarm and speak** on
+the Mac (it runs natively, so it uses macOS `afplay` + `say`). You categorize
+what's critical:
+
+- give a **Note** (or its reminder) a critical **label** — default `critical` /
+  `crítico` — or
+- a **calendar event** with importance `critical`.
+
+When that reminder fires, the alarm sounds in addition to the normal reminder
+channel. An agent can trigger it too — e.g. the **DBA Sênior** persona creates a
+note labeled `critical` with a due time of now when it finds production down.
+
+Test it on the Mac:
+
+```bash
+python scripts/test_mac_alarm.py "Banco de produção caiu"
+```
+
+Tune via `ODYSSEUS_MAC_ALARM_*` (sound file, repeat count, `say` on/off, voice,
+and which labels count as critical) — see `.env.example`. Off macOS or when
+`ODYSSEUS_MAC_ALARM_ENABLED=0`, it's a safe no-op.
+
 ### One-time setup / backfill
 
 ```bash

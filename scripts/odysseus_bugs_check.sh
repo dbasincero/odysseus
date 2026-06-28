@@ -32,6 +32,7 @@ run "$PY" -m pytest -q -p no:cacheprovider \
     tests/test_life_os_history.py \
     tests/test_life_os_actions.py \
     tests/test_life_os_digests.py \
+    tests/test_mac_alarm.py \
     tests/test_life_os.py
 
 # 3. Read-only guard smoke check (independent of the suite).
