@@ -81,13 +81,19 @@ def _mode() -> str:
             == "watermark" else "window")
 
 
-def _watermark(model, attr) -> datetime:
+def _watermark(model, attr, owner: Optional[str] = None) -> datetime:
     """Effective watermark for incremental fetch: (max ts already in history −
-    lag), or (now − window) on first run so the initial backfill stays bounded."""
+    lag), or (now − window) on first run so the initial backfill stays bounded.
+
+    Scoped to ``owner`` so one account's watermark can't suppress another's
+    fetch in a multi-user install."""
     lag = _env_int("ODYSSEUS_LIFE_OS_HEALTH_WATERMARK_LAG_DAYS", _DEFAULT_WATERMARK_LAG_DAYS)
     session = hist.get_session()
     try:
-        latest = session.query(attr).order_by(attr.desc()).limit(1).scalar()
+        q = session.query(attr)
+        if owner is not None:
+            q = q.filter(model.owner == owner)
+        latest = q.order_by(attr.desc()).limit(1).scalar()
     finally:
         session.close()
     if latest is None:
@@ -97,7 +103,8 @@ def _watermark(model, attr) -> datetime:
     return latest - timedelta(days=lag)
 
 
-def _build_query(select_prefix: str, time_col: str, env_name: str, model, attr) -> str:
+def _build_query(select_prefix: str, time_col: str, env_name: str, model, attr,
+                 owner: Optional[str] = None) -> str:
     """Build the effective read query honoring custom override, mode, and window.
 
     A custom query is used as-is, unless it contains the literal ``{watermark}``
@@ -107,10 +114,10 @@ def _build_query(select_prefix: str, time_col: str, env_name: str, model, attr) 
     custom = os.getenv(env_name, "").strip()
     if custom:
         if "{watermark}" in custom:
-            return custom.replace("{watermark}", _watermark(model, attr).isoformat())
+            return custom.replace("{watermark}", _watermark(model, attr, owner).isoformat())
         return custom
     if _mode() == "watermark":
-        wm = _watermark(model, attr).isoformat()
+        wm = _watermark(model, attr, owner).isoformat()
         return f"{select_prefix} WHERE {time_col} > '{wm}' ORDER BY {time_col}"
     return (f"{select_prefix} WHERE {time_col} > now() - interval '{_window_days()} days' "
             f"ORDER BY {time_col}")
@@ -178,7 +185,7 @@ def ingest_health(owner: Optional[str] = None) -> dict:
     try:
         metrics_q = _build_query(
             _METRICS_SELECT, "recorded_at", "ODYSSEUS_LIFE_OS_HEALTH_METRICS_QUERY",
-            hist.HealthMetric, hist.HealthMetric.ts)
+            hist.HealthMetric, hist.HealthMetric.ts, owner=owner)
         rows = _run_source_query(engine, metrics_q)
         mapped = [{
             "external_id": r.get("external_id"),
@@ -192,7 +199,7 @@ def ingest_health(owner: Optional[str] = None) -> dict:
 
         workouts_q = _build_query(
             _WORKOUTS_SELECT, "started_at", "ODYSSEUS_LIFE_OS_HEALTH_WORKOUTS_QUERY",
-            hist.Workout, hist.Workout.start_ts)
+            hist.Workout, hist.Workout.start_ts, owner=owner)
         rows = _run_source_query(engine, workouts_q)
         mapped = [{
             "external_id": r.get("external_id"),

@@ -375,9 +375,14 @@ def register_db_connections(include_health: bool = True) -> dict:
         try:
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
-            conns = data.get("connections", data) if isinstance(data, (dict, list)) else []
+            # The connections file is accepted as either a bare list or a
+            # {"connections": [...]} object — handle both without assuming .get.
             if isinstance(data, dict):
                 conns = data.get("connections", [])
+            elif isinstance(data, list):
+                conns = data
+            else:
+                conns = []
         except (OSError, ValueError):
             conns = []
 

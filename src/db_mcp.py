@@ -153,6 +153,23 @@ _WRITE_KEYWORDS = {
     "ATTACH", "DETACH", "VACUUM", "REINDEX", "LOCK", "UPSERT", "RENAME",
     "COMMENT", "DO", "SAVEPOINT", "SET", "INTO", "COMMIT", "ROLLBACK",
 }
+# Functions that are technically SELECT-able but have side effects the read
+# path must never allow: writing/reading server files, outbound connections
+# (SSRF), running OS commands, loading extensions, or stalling the server (DoS).
+# The DB-level read-only transaction (_apply_read_only) blocks the *writing*
+# ones too, but this denylist also stops file-reads / SSRF / DoS that a
+# read-only transaction permits. Matched as whole tokens (\w+).
+_DANGEROUS_FUNCTIONS = {
+    # PostgreSQL
+    "LO_EXPORT", "LO_IMPORT", "PG_READ_FILE", "PG_READ_BINARY_FILE",
+    "PG_LS_DIR", "PG_STAT_FILE", "PG_SLEEP", "PG_SLEEP_FOR", "PG_SLEEP_UNTIL",
+    "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND", "PG_RELOAD_CONF",
+    "DBLINK", "DBLINK_EXEC", "DBLINK_CONNECT",
+    # MySQL
+    "LOAD_FILE", "SLEEP", "BENCHMARK", "SYS_EXEC", "SYS_EVAL",
+    # SQLite (loadable extensions / fs)
+    "LOAD_EXTENSION", "READFILE", "WRITEFILE", "EDIT", "FTS3_TOKENIZER",
+}
 
 
 def _strip_sql(sql: str) -> str:
@@ -197,6 +214,17 @@ def is_read_only_sql(sql: str) -> tuple[bool, str]:
     hit = _WRITE_KEYWORDS.intersection(tokens)
     if hit:
         return False, f"statement contains write/DDL keyword(s): {', '.join(sorted(hit))}"
+    danger = _DANGEROUS_FUNCTIONS.intersection(tokens)
+    if danger:
+        return False, (
+            "statement uses a function not allowed on the read path "
+            f"(file/network/OS/DoS side effects): {', '.join(sorted(danger))}"
+        )
+    # A PRAGMA with an assignment writes engine/db state (e.g.
+    # `PRAGMA user_version = 5`, `PRAGMA journal_mode = WAL`). Read pragmas
+    # (integrity_check, table_info(...)) carry no '=', so this stays precise.
+    if tokens[0] == "PRAGMA" and "=" in stripped:
+        return False, "PRAGMA assignments are not allowed on the read path"
     return True, ""
 
 
@@ -339,8 +367,26 @@ def op_list_connections() -> str:
 
 
 def _redact(target: str) -> str:
-    """Hide credentials in a connection string before showing it."""
-    return re.sub(r"://[^@/]*@", "://***@", str(target))
+    """Hide credentials in a connection string before showing it.
+
+    Masks both ``scheme://user:pass@host`` and credentials carried in the query
+    string (``?password=...`` / ``user=...``), which the userinfo form misses.
+    """
+    s = re.sub(r"://[^@/]*@", "://***@", str(target))
+    s = re.sub(r"(?i)((?:password|passwd|pwd|user|username|uid)=)[^&\s;]+", r"\1***", s)
+    return s
+
+
+def _safe_err(e, conn: dict | None = None) -> str:
+    """Render an exception for the user with any connection credentials masked —
+    SQLAlchemy/driver errors can echo the DSN (with password) back."""
+    msg = _redact(str(e))
+    if conn:
+        for key in ("url", "uri"):
+            raw = conn.get(key)
+            if raw:
+                msg = msg.replace(str(raw), _redact(str(raw)))
+    return msg
 
 
 def op_list_tables(conn_id: str) -> str:
@@ -368,7 +414,7 @@ def op_list_tables(conn_id: str) -> str:
             lines += [f"- {v}" for v in views]
         return "\n".join(lines)
     except Exception as e:
-        return f"Error listing tables for `{conn_id}`: {e}"
+        return f"Error listing tables for `{conn_id}`: {_safe_err(e, conn)}"
 
 
 def op_describe(conn_id: str, table: str) -> str:
@@ -383,7 +429,7 @@ def op_describe(conn_id: str, table: str) -> str:
             return _describe_mongo(conn, table)
         return _describe_sql(conn, table)
     except Exception as e:
-        return f"Error describing `{table}` on `{conn_id}`: {e}"
+        return f"Error describing `{table}` on `{conn_id}`: {_safe_err(e, conn)}"
 
 
 def _describe_sql(conn: dict, table: str) -> str:
@@ -468,7 +514,23 @@ def op_query(conn_id: str, query: str, limit: int = DEFAULT_ROW_LIMIT) -> str:
             return _query_mongo(conn, query, limit, write=False)
         return _query_sql(conn, query, limit)
     except Exception as e:
-        return f"Query error on `{conn_id}`: {e}"
+        return f"Query error on `{conn_id}`: {_safe_err(e, conn)}"
+
+
+def _apply_read_only(conn_exec, dialect: str) -> None:
+    """Best-effort DB-level read-only enforcement for the current transaction —
+    a second line of defense behind is_read_only_sql() so even a SELECT with a
+    writing side effect (e.g. lo_export) is rejected by the server itself."""
+    from sqlalchemy import text
+    try:
+        if dialect in ("postgresql", "mysql", "mariadb"):
+            conn_exec.execute(text("SET TRANSACTION READ ONLY"))
+        elif dialect == "sqlite":
+            conn_exec.execute(text("PRAGMA query_only = ON"))
+    except Exception:
+        # Dialect doesn't support it / already in a txn — the keyword + function
+        # guards still apply, so fail open on the hardening, not on safety.
+        pass
 
 
 def _query_sql(conn: dict, sql: str, limit: int) -> str:
@@ -483,6 +545,7 @@ def _query_sql(conn: dict, sql: str, limit: int) -> str:
         conn_exec = raw.execution_options(no_parameters=True)
         trans = conn_exec.begin()
         try:
+            _apply_read_only(conn_exec, engine.dialect.name)
             result = conn_exec.execute(text(sql))
             if not result.returns_rows:
                 return "(statement executed; no rows returned)"
@@ -567,7 +630,7 @@ def op_execute(conn_id: str, statement: str) -> str:
             return _execute_mongo(conn, statement)
         return _execute_sql(conn, statement)
     except Exception as e:
-        return f"Execute error on `{conn_id}`: {e}"
+        return f"Execute error on `{conn_id}`: {_safe_err(e, conn)}"
 
 
 def _execute_sql(conn: dict, sql: str) -> str:
@@ -662,7 +725,7 @@ def op_diagnose(conn_id: str) -> str:
             return _diagnose_mongo(conn)
         return _diagnose_sql(conn)
     except Exception as e:
-        return f"Diagnostics error on `{conn_id}`: {e}"
+        return f"Diagnostics error on `{conn_id}`: {_safe_err(e, conn)}"
 
 
 def _diagnose_sql(conn: dict) -> str:
@@ -676,6 +739,7 @@ def _diagnose_sql(conn: dict) -> str:
                    "Use db_query with engine-specific checks._")
         return "\n".join(out)
     with engine.connect() as raw:
+        _apply_read_only(raw, dialect)
         for label, sql in checks:
             out.append(f"\n### {label}")
             try:
